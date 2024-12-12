@@ -1,3 +1,4 @@
+
 # %%
 from datetime import datetime, timedelta
 
@@ -24,8 +25,8 @@ flt_color_dict = {
 
 input_csv = '682391965_T_ONTIME_MARKETING.csv'      # June
 input_csv = '966008573_T_ONTIME_MARKETING.csv'      # May
-input_csv = 'deled_code_share\On_Time_Marketing_Carrier_On_Time_Performance_(Beginning_January_2018)_2019_5.csv'
-
+input_csv = '2019_ontime/On_Time_Marketing_Carrier_On_Time_Performance_Beginning_January_2018_2019_7/On_Time_Marketing_Carrier_On_Time_Performance_(Beginning_January_2018)_2019_7.csv'
+#input_csv = 'On_Time_Marketing_Carrier_On_Time_Performance_(Beginning_January_2018)_2019_5.csv'
 
 # plot_date = 
 crs_dep_thresh = 40         # 15 min bins
