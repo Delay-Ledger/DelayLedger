@@ -24,7 +24,7 @@ flt_color_dict = {
 
 input_csv = '682391965_T_ONTIME_MARKETING.csv'      # June
 input_csv = '966008573_T_ONTIME_MARKETING.csv'      # May
-input_csv = 'deled_code_share\On_Time_Marketing_Carrier_On_Time_Performance_(Beginning_January_2018)_2019_5.csv'
+input_csv = 'On_Time_Marketing_Carrier_On_Time_Performance_(Beginning_January_2018)_2019_5.csv'
 
 
 # plot_date = 
@@ -32,15 +32,22 @@ crs_dep_thresh = 40         # 15 min bins
 max_delay_15bin = 12         # 15 min bins
 max_tot_increase_factor = 1     # 1.1, 1.2, ...
 
-plotBool = False
+plotBool = True
 runGurobi = True
 timelimit = 60*15
 
-high_priority_b = 7
-low_priority_a = 3
+#NEW: since higher lambda means less jumps, we have to swap
+high_priority_b = 3
+low_priority_a = 7
 
 untruthful_val = 7
 
+#slope = 9
+surge = 500
+
+lambda_parameter = 5
+
+round_T = 24 # 24 hours, NEW: want to change to less than day too
 
 
 # %%
