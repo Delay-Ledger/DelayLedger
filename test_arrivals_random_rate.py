@@ -5,10 +5,10 @@ from params import *
 
 random.seed(1)
 
-def expected_pv(T, lambda_parameter, slope, surge):
-    # slope is in dollars per minute, T is in hours
-    # must get a dollars per minute expected value slope
-    return (T * 60 * slope + surge * (1/lambda_parameter) * T)/T/60
+# def expected_pv(T, lambda_parameter, slope, surge):
+#     # slope is in dollars per minute, T is in hours
+#     # must get a dollars per minute expected value slope
+#     return (T * 60 * slope + surge * (1/lambda_parameter) * T)/T/60
 
 def cost_jump_arrivals(lambda_parameter, T):
     """
@@ -34,16 +34,20 @@ def cost_jump_arrivals(lambda_parameter, T):
 
     # create a list of arrival times that are cumulative
     # with intervals between arrivals being exponentially distributed
-    while arrivals[i] < T:
+    while arrivals[i] < T*4:
         # randomly sample exponential variable with parameter lambda
         v = np.random.exponential(lambda_parameter)
+        v_hours = np.floor(v)
+        v_15mins = np.round(((v - v_hours)*60)/15) # fractional part of hour -> minutes -> 15min bins
+
+        v_15bin = v_hours*4 + v_15mins
         
         # we are only interested in costs within the round
-        if v + arrivals[i] > T:
+        if v_15bin + arrivals[i] > T*4:
             break
 
         # add cumulative values to arrivals array
-        arrivals.append(v + arrivals[i])
+        arrivals.append(v_15bin + arrivals[i])
 
         #iterate
         i += 1
@@ -52,6 +56,8 @@ def cost_jump_arrivals(lambda_parameter, T):
 
 def create_piecewise_function(breakpoints, slope, surge):
     """
+    NEW: need to change piecewise breakpoints output to be in 15min bins, then this function needs to output a function based on 15 min bins
+
     Creates a piecewise function with dynamically generated function mappings.
     The number of breakpoints are random, so a dynamic function was needed.
     Each piecewise break defines when the rate of the cost per delay changes.
@@ -89,13 +95,13 @@ def create_piecewise_function(breakpoints, slope, surge):
             # Apply cost surge at each breakpoint
             # Breakpoints are in hours, convert to minutes
 
-            y_piecewise = tracker_f(breakpoints[i] * 60)  
-            plt.plot(breakpoints[i], 0, marker='o', linestyle='None', color='red', markersize = 2)  # 'o' = dot marker
+            y_piecewise = tracker_f(breakpoints[i])  #breakpoints[i] * 60
+            # plt.plot(breakpoints[i], 0, marker='o', linestyle='None', color='red', markersize = 2)  # 'o' = dot marker
 
             # y_piecewise = tracker_f(breakpoints[i] * 60) + surge
 
             # y = ax + b --> b =  y - ax
-            intercept = y_piecewise - (slope + i*surge) * breakpoints[i] * 60 # Solve for new function
+            intercept = y_piecewise - (slope + i*surge) * breakpoints[i] # Solve for new function
             tracker_f = lambda x, intercept=intercept, i=i: (slope + i*surge) * x + intercept  # Update tracker
 
             # intercept = y_piecewise - slope * breakpoints[i] * 60
@@ -107,11 +113,114 @@ def create_piecewise_function(breakpoints, slope, surge):
 
     # Create conditions as boolean masks to pass into np.piecewise function
     def condition_masks(x):
-        masks = [(breakpoints[i]*60 <= x) & (x < breakpoints[i+1]*60) for i in range(len(breakpoints) - 1)]
-        masks.append(x >= breakpoints[-1]*60)  # Last condition (x ≥ last breakpoint)
+        masks = [(breakpoints[i] <= x) & (x < breakpoints[i+1]) for i in range(len(breakpoints) - 1)]
+        masks.append(x >= breakpoints[-1])  # Last condition (x ≥ last breakpoint)
         return masks
 
     return lambda x: np.piecewise(x, condition_masks(x), function_list)
+
+# def cost_jump_arrivals(lambda_parameter, T):
+#     """
+#     Cost jumps that form the piecewise linear cost function of flights
+#     arrive randomly through a poisson process. This function, determines
+#     the timestamps when a random cost surge may occur.
+
+#     lambda_parameter: a uniform-random-generated variable as input for poisson
+#     T: length of round
+
+#     Returns: an arrivals array with timestamps for when cost jumps occur
+#     note: the arrivals array will always have 0 in its first index
+#     """
+
+#     # create array for arrivals and have 0 as the first index
+#     arrivals = []
+#     arrivals.append(0) 
+#     # ensures that there is an index to add to
+#     # also ensures that piecewise conditions start at x >= 0
+
+#     # start index
+#     i = 0
+
+#     # create a list of arrival times that are cumulative
+#     # with intervals between arrivals being exponentially distributed
+#     while arrivals[i] < T:
+#         # randomly sample exponential variable with parameter lambda
+#         v = np.random.exponential(lambda_parameter)
+        
+#         # we are only interested in costs within the round
+#         if v + arrivals[i] > T:
+#             break
+
+#         # add cumulative values to arrivals array
+#         arrivals.append(v + arrivals[i])
+
+#         #iterate
+#         i += 1
+
+#     return arrivals
+
+# def create_piecewise_function(breakpoints, slope, surge):
+#     """
+#     Creates a piecewise function with dynamically generated function mappings.
+#     The number of breakpoints are random, so a dynamic function was needed.
+#     Each piecewise break defines when the rate of the cost per delay changes.
+#     The breaks are in units of hours (since the round length is in hours),
+#     so we need to be careful to change these to units of minutes, as this  
+#     function operates in minutes.
+#     The values of the slopes and surge for each piecewise interval may be 
+#     different in the future, but they are set to the same value right now.
+
+#     This a piecewise continuous function, where each arrival prompts the 
+#     change of the functions slope.
+
+#     breakpoints: list of arrival times for each cost surge, in hours
+#     slope: the slope of the linear segments, in units of dollars per minute
+#     surge: the magnitude of the cost surge at each piecewise breakpoint
+
+#     Returns: a function that evaluates piecewise expressions
+#     """
+
+#     num_segments = len(breakpoints)
+#     # print(breakpoints)
+    
+#     # tracker_f created in order to track function values during piecewise construction
+#     tracker_f = lambda x: slope * x  
+
+#     # List to store each sub-function as a part of the piecewise function
+#     function_list = []
+
+#     # Create function segments dynamically
+#     for i in range(num_segments):
+#         if i == 0:
+#             tracker_f = lambda x: slope * x
+#             function_list.append(lambda x: slope * x)  # First segment (before first breakpoint)
+#         else:
+#             # Apply cost surge at each breakpoint
+#             # Breakpoints are in hours, convert to minutes
+
+#             y_piecewise = tracker_f(breakpoints[i] * 60)  
+#             # plt.plot(breakpoints[i], 0, marker='o', linestyle='None', color='red', markersize = 2)  # 'o' = dot marker
+
+#             # y_piecewise = tracker_f(breakpoints[i] * 60) + surge
+
+#             # y = ax + b --> b =  y - ax
+#             intercept = y_piecewise - (slope + i*surge) * breakpoints[i] * 60 # Solve for new function
+#             tracker_f = lambda x, intercept=intercept, i=i: (slope + i*surge) * x + intercept  # Update tracker
+
+#             # intercept = y_piecewise - slope * breakpoints[i] * 60
+#             # tracker_f = lambda x, intercept=intercept: slope * x + intercept #update tracker
+
+#             # Add next piecewise interval
+#             function_list.append(lambda x, intercept=intercept, i=i: (slope + i*surge) * x + intercept) 
+#             # function_list.append(lambda x, intercept=intercept: slope * x + intercept)
+
+#     # Create conditions as boolean masks to pass into np.piecewise function
+#     def condition_masks(x):
+#         masks = [(breakpoints[i]*60 <= x) & (x < breakpoints[i+1]*60) for i in range(len(breakpoints) - 1)]
+#         masks.append(x >= breakpoints[-1]*60)  # Last condition (x ≥ last breakpoint)
+#         return masks
+
+#     return lambda x: np.piecewise(x, condition_masks(x), function_list)
 
 
 # ########################################################################################
@@ -267,77 +376,106 @@ tenth = []
 
 functions_mvp = []
 breakpoints_mvp = []
-x = np.linspace(0, round_T, 500)
+x = np.linspace(0, round_T*4, 500)
 
-for i in range(0,1000):
-    breakpoints = cost_jump_arrivals(lambda_parameter,round_T)
-    print(breakpoints)
-    # add all breakpoints for the mvp function
-    for j in range(len(breakpoints)):
-        breakpoints_mvp.append(breakpoints[j])
+# for i in range(0,500):
+#     breakpoints = cost_jump_arrivals(lambda_parameter,round_T)
+#     # add all breakpoints for the mvp function
+#     for j in range(len(breakpoints)):
+#         breakpoints_mvp.append(breakpoints[j])
 
-    # first element is always 0
-    first.append(breakpoints[1]) if len(breakpoints) >= 2 else ""
-    second.append(breakpoints[2]) if len(breakpoints) >= 3 else ""
-    third.append(breakpoints[3]) if len(breakpoints) >= 4 else ""
-    fourth.append(breakpoints[4]) if len(breakpoints) >= 5 else ""
-    fifth.append(breakpoints[5]) if len(breakpoints) >= 6 else ""
-    sixth.append(breakpoints[6]) if len(breakpoints) >= 7 else ""
-    seventh.append(breakpoints[7]) if len(breakpoints) >= 8 else ""
-    eighth.append(breakpoints[8]) if len(breakpoints) >= 9 else ""
-    ninth.append(breakpoints[9]) if len(breakpoints) >= 10 else ""
-    tenth.append(breakpoints[10]) if len(breakpoints) >= 11 else ""
+#     # first element is always 0
+#     first.append(breakpoints[1]) if len(breakpoints) >= 2 else ""
+#     second.append(breakpoints[2]) if len(breakpoints) >= 3 else ""
+#     third.append(breakpoints[3]) if len(breakpoints) >= 4 else ""
+#     fourth.append(breakpoints[4]) if len(breakpoints) >= 5 else ""
+#     fifth.append(breakpoints[5]) if len(breakpoints) >= 6 else ""
+#     sixth.append(breakpoints[6]) if len(breakpoints) >= 7 else ""
+#     seventh.append(breakpoints[7]) if len(breakpoints) >= 8 else ""
+#     eighth.append(breakpoints[8]) if len(breakpoints) >= 9 else ""
+#     ninth.append(breakpoints[9]) if len(breakpoints) >= 10 else ""
+#     tenth.append(breakpoints[10]) if len(breakpoints) >= 11 else ""
 
-    # Create the piecewise function
-    f = create_piecewise_function(breakpoints, slope=m, surge=s)
-    # add all functions to the mvp function
-    functions_mvp.append(f)
+#     # Create the piecewise function
+#     f = create_piecewise_function(breakpoints, slope=m, surge=s)
+#     # add all functions to the mvp function
+#     functions_mvp.append(f)
         
-    # Using piecewise function to find y values
-    # y1 = f(x*60)
+#     # Using piecewise function to find y values
+#     # y1 = f(x*60)
 
-    # Expected value function
-    # e = lambda x: theory_value*x
-    # y2 = e(x*60)
+#     # Expected value function
+#     # e = lambda x: theory_value*x
+#     # y2 = e(x*60)
 
-    # Regular v_f
-    # r = lambda x: m*x
-    # y3 = r(x*60)
+#     # Regular v_f
+#     # r = lambda x: m*x
+#     # y3 = r(x*60)
 
-    # Plot them on the same axes
-    # plt.plot(x, y1)
-    # plt.plot(x, y2, label="Expected Value")
-    # plt.plot(x, y3, label="Flight Value")
+#     # Plot them on the same axes
+#     # plt.plot(x, y1)
+#     # plt.plot(x, y2, label="Expected Value")
+#     # plt.plot(x, y3, label="Flight Value")
 
-print("Average First Arrival",np.mean(first))
-print("Average Second Arrival",np.mean(second))
-print("Average Third Arrival",np.mean(third))
-print("Average Fourth Arrival",np.mean(fourth))
-print("Average Fifth Arrival",np.mean(fifth))
-print("Average Sixth Arrival",np.mean(sixth))
-print("Average Seventh Arrival",np.mean(seventh))
-print("Average Eigth Arrival",np.mean(eighth))
-print("Average Ninth Arrival",np.mean(ninth))
-print("Average Tenth Arrival",np.mean(tenth))
+# print("Average First Arrival",np.mean(first))
+# print("Average Second Arrival",np.mean(second))
+# print("Average Third Arrival",np.mean(third))
+# print("Average Fourth Arrival",np.mean(fourth))
+# print("Average Fifth Arrival",np.mean(fifth))
+# print("Average Sixth Arrival",np.mean(sixth))
+# print("Average Seventh Arrival",np.mean(seventh))
+# print("Average Eigth Arrival",np.mean(eighth))
+# print("Average Ninth Arrival",np.mean(ninth))
+# print("Average Tenth Arrival",np.mean(tenth))
 
 ########################
 # MVP Calculation
 ########################
+breakpoints_mvp_500 = []
+breakpoints_mvp_1000 = []
+functions_mvp_500 = []
+functions_mvp_1000 = []
 
-clean_breakpoints_mvp = sorted(set(breakpoints_mvp))
-print("Number of Breakpoints:", len(clean_breakpoints_mvp))
-print("Number of Function Samples:", len(functions_mvp))
+for i in range(0,1000):
+    breakpoints = cost_jump_arrivals(lambda_parameter,round_T)
+    for j in range(len(breakpoints)):
+        breakpoints_mvp_500.append(breakpoints[j])
+    # Create the piecewise function
+    f = create_piecewise_function(breakpoints, slope=m, surge=s)
+    # add all functions to the mvp function
+    functions_mvp_500.append(f)
 
-y_breakpoints_mvp = []
+for i in range(0,1000):
+    breakpoints = cost_jump_arrivals(lambda_parameter,round_T)
+    for j in range(len(breakpoints)):
+        breakpoints_mvp_1000.append(breakpoints[j])
+    # Create the piecewise function
+    f = create_piecewise_function(breakpoints, slope=m, surge=s)
+    # add all functions to the mvp function
+    functions_mvp_1000.append(f)
 
-for b in clean_breakpoints_mvp:
+clean_breakpoints_mvp_500 = sorted(set(breakpoints_mvp_500))
+clean_breakpoints_mvp_1000 = sorted(set(breakpoints_mvp_1000))
+
+y_breakpoints_mvp_500 = []
+y_breakpoints_mvp_1000 = []
+
+for b in clean_breakpoints_mvp_500:
     values_at_breakpoint = []
-    for fn in functions_mvp:
-        values_at_breakpoint.append(fn(b*60))
+    for fn in functions_mvp_500:
+        values_at_breakpoint.append(fn(b))
         # print(f'{b} and {fn(b)}')
-    y_breakpoints_mvp.append(np.mean(values_at_breakpoint))
+    y_breakpoints_mvp_500.append(np.mean(values_at_breakpoint))
 
-plt.plot(clean_breakpoints_mvp,y_breakpoints_mvp, label = 'full MVP calculation')
+for b in clean_breakpoints_mvp_1000:
+    values_at_breakpoint = []
+    for fn in functions_mvp_1000:
+        values_at_breakpoint.append(fn(b))
+        # print(f'{b} and {fn(b)}')
+    y_breakpoints_mvp_1000.append(np.mean(values_at_breakpoint))
+
+plt.plot(clean_breakpoints_mvp_500,y_breakpoints_mvp_1000, label = 'mvp 1000')
+plt.plot(clean_breakpoints_mvp_500,y_breakpoints_mvp_500, label='mvp 500')
 #plt.scatter(clean_breakpoints_mvp, y_breakpoints_mvp)
 
 
@@ -346,17 +484,18 @@ plt.plot(clean_breakpoints_mvp,y_breakpoints_mvp, label = 'full MVP calculation'
 # Simple MVP Calculation
 ########################
 
-average_breakpoints = [0,np.mean(first),np.mean(second),np.mean(third),np.mean(fourth)]#, np.mean(fifth), np.mean(sixth), np.mean(seventh), np.mean(eighth), np.mean(ninth), np.mean(tenth)]
+# average_breakpoints = [0,np.mean(first),np.mean(second),np.mean(third),np.mean(fourth), np.mean(fifth)]#, np.mean(sixth), np.mean(seventh), np.mean(eighth), np.mean(ninth), np.mean(tenth)]
 
 # average_breakpoints = cost_jump_arrivals(lambda_parameter,round_T)
 
-simple_f = create_piecewise_function(average_breakpoints, slope = m, surge = s)
-y_simple = simple_f(x*60)
+# simple_f = create_piecewise_function(average_breakpoints, slope = m, surge = s)
+# y_simple = simple_f(x)
 
-plt.plot(x,y_simple,label='simplified MVP calculation')
+# plt.plot(x,y_simple,label='simplified MVP calculation')
+# plt.scatter(average_breakpoints,np.zeros(len(average_breakpoints)), marker='o', color='red', s = 2)
 
 # Add a legend, labels, and show the plot
-plt.xlabel("delay hours")
+plt.xlabel("delay (15min bins)")
 plt.ylabel("accumulated cost ($)")
 plt.title("MVP Calculation")
 plt.legend()
