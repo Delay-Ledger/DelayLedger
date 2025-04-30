@@ -29,7 +29,7 @@ def collect_airline_effect_data(df_dlm, plot_type):
 
     # loop through dates and record delay changes per airline and control
     this_date = date(2019, 5, 1)
-    end_date = date(2019, 5, 30)
+    end_date = date(2019, 5, 10) # CHANGE:
     delta = timedelta(days=1)
 
     # determine which airline was in control
@@ -108,9 +108,17 @@ airline_symbols = {
 # folder_name = 'exp30_ledger_wrt_intra_40'
 # folder_name = 'exp30_may'
 # folder_name = 'exp30_may_tot_delay_cant_incr'
-folder_name = 'exp30_may_tot_delay_cant_incr_no_cxn_bonus'
+# folder_name = 'exp30_may_tot_delay_cant_incr_no_cxn_bonus'
+# folder_name = 'test30'
+# folder_name = 'standard_decisions_eval_stochastic3'
 
+# folder_name = 'standard_decisions_eval_stochastic_lambda5_surge10'
+# folder_name = 'test30_with_flightvals2'
+# folder_name = 'eval_new_piecewise_30days_fixed_priorities'
+# folder_name = 'eval_new_piecewise_30days'
+folder_name = 'standard_decisions_eval_mvf_lambda5_surge10'
 
+# CHANGE:
 
 if not os.path.exists(folder_name+'/figures'):
     os.mkdir(folder_name+'/figures')
@@ -120,7 +128,7 @@ if not os.path.exists(folder_name+'/figures'):
 # count number of flights
 # Re-process data
 this_date = date(2019, 5, 1)
-end_date = date(2019, 5, 30)
+end_date = date(2019, 5, 10) # CHANGE:
 delta = timedelta(days=1)
 subdir_full_path = folder_name + '/intra-alt-intra'
 str_date = this_date.strftime("%Y-%m-%d")
@@ -140,7 +148,7 @@ while this_date <= end_date:
     num_flts_ls.append(df.shape[0])
 
     for airline in airline_flts_dict:
-        airline_flts_dict[airline] += df[df.mkt_carrier == airline].shape[0]
+        airline_flts_dict[airline] += df[df.marketing_airline_network == airline].shape[0]
 
     # high
     priority_dict['high'] += df[df.flight_val >= 7].shape[0]
@@ -202,8 +210,8 @@ baseline_weighted_delay
 intra_weighted_delay
 iai_weighted_delay
 
-print('Average reduction from Intra is:', np.mean(np.subtract(baseline_weighted_delay, intra_weighted_delay)/baseline_weighted_delay))
-print('Average reduction from DLM is:', np.mean(np.subtract(intra_weighted_delay, iai_weighted_delay)/intra_weighted_delay))
+# print('Average reduction from Intra is:', np.mean(np.subtract(baseline_weighted_delay, intra_weighted_delay)/baseline_weighted_delay))
+# print('Average reduction from DLM is:', np.mean(np.subtract(intra_weighted_delay, iai_weighted_delay)/intra_weighted_delay))
 
 
 # %%
@@ -347,6 +355,91 @@ markers = [plt.Line2D([0,0],[0,0],color=color, marker='o', markeredgecolor='k', 
 leg = plt.legend(markers, airline_color.keys(), facecolor='white', labelspacing=1, bbox_to_anchor=(1.3, 0.8, 0.3, 0.2),prop={'size': 16},edgecolor='k', ncol=2)
 # leg.set_title('Coordinator (*)',prop={'size':18})
 plt.savefig(folder_name+'/figures/airline_plain_legend.png', facecolor='w', dpi=600, bbox_inches='tight')
+
+
+#######
+# Proportion of Total Flights
+#######
+
+total_flights = sum(airline_flts_dict.values())
+prop_flights = {k : np.round((100 * v / total_flights),1) for k, v in airline_flts_dict.items()}
+print('Proportion of Total Flights:', prop_flights)
+
+#######
+# Public delay
+#######
+
+# read intra-alt-intra
+df_iai = pd.read_csv(folder_name+'/intra-alt-intra/df_delays.csv', index_col=0)
+
+public_delay_intra2_cols = [c for c in df_iai.columns if '-Intra2' in c and 'Weighted' not in c]
+
+public_delay_intra1_cols = [c for c in df_iai.columns if '-Intra1' in c and 'Weighted' not in c and 'avg' not in c]
+
+# change in public delay
+# public_delay_intra2 - public_delay_intra1
+
+public_delay_intra2 = df_iai[public_delay_intra2_cols]
+# rename columns to only dates
+public_delay_intra2.columns = public_delay_intra2.columns.str.split('-').str[:3].str.join('-')
+
+public_delay_intra1 = df_iai[public_delay_intra1_cols]
+# rename columns to only dates
+public_delay_intra1.columns = public_delay_intra1.columns.str.split('-').str[:3].str.join('-')
+
+public_delay_change = np.round(((public_delay_intra2 - public_delay_intra1)/public_delay_intra1*100).T.mean(),1)
+
+print('Average change in public delay (%)', public_delay_change)
+
+prop_flights_series = pd.Series(prop_flights)
+
+print('Overall average change in public delay (%)', (prop_flights_series.reindex(public_delay_change.index) * public_delay_change).sum()/100)
+
+#######
+# Overall private delay
+#######
+
+private_delay_intra2_cols = [c for c in df_iai.columns if '-Intra2-Weighted' in c]
+private_delay_intra1_cols = [c for c in df_iai.columns if '-Intra1-Weighted' in c and 'avg' not in c]
+# change in private delay
+# private_delay_intra2 - private_delay_intra1
+
+private_delay_intra2 = df_iai[private_delay_intra2_cols]
+# rename columns to only dates
+private_delay_intra2.columns = private_delay_intra2.columns.str.split('-').str[:3].str.join('-')
+
+private_delay_intra1 = df_iai[private_delay_intra1_cols]
+# rename columns to only dates
+private_delay_intra1.columns = private_delay_intra1.columns.str.split('-').str[:3].str.join('-')
+
+private_delay_change = np.round(((private_delay_intra2 - private_delay_intra1)/private_delay_intra1*100).T.mean(),1)
+
+print('Average private cost change, Overall (%)',private_delay_change)
+
+print('Overall average change in private delay (%)', (prop_flights_series.reindex(private_delay_change.index) * private_delay_change).sum()/100)
+
+
+# #######
+# # With Intra-Airline Substitution
+# #######
+
+# private_delay_baseline_cols = [c for c in df_iai.columns if '-Baseline-Weighted' in c]
+
+# private_delay_baseline = df_iai[private_delay_baseline_cols]
+# # rename columns to only dates
+# private_delay_baseline.columns = private_delay_baseline.columns.str.split('-').str[:3].str.join('-')
+
+# intra1_baseline_private_delay_change = np.round(((private_delay_intra1 - private_delay_baseline)/private_delay_baseline*100).T.mean(),1)
+
+# print('Average private cost change, Intra-Airline Substitution (%)', intra1_baseline_private_delay_change)
+
+# #######
+# # With DeLed
+# #######
+
+# intra2_baseline_private_delay_change = np.round(((private_delay_intra2 - private_delay_baseline)/private_delay_baseline*100).T.mean(),1)
+
+# print('Average private cost change, Intra2 vs Baseline (%)', intra2_baseline_private_delay_change)
 
 
 

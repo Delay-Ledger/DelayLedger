@@ -34,7 +34,7 @@ max_tot_increase_factor = 1     # 1.1, 1.2, ...
 
 plotBool = True
 runGurobi = True
-timelimit = 60*15
+timelimit = 60*20
 
 #NEW: since higher lambda means less jumps, we have to swap
 high_priority_b = 3
@@ -43,7 +43,7 @@ low_priority_a = 7
 untruthful_val = 7
 
 #slope = 9
-surge = 500
+surge = 10 # increase rate by 5 units
 
 lambda_parameter = 5
 

@@ -91,6 +91,9 @@ def run_day(subdir_name, this_date, run_type, airline='', untruthful_airline='',
     # Baseline: Save Gurobi Results
     df_base, _, _ = create_df2(base_path, base_path, df1, F, untruthful_airline=untruthful_airline, airline_ls=airline_ls)
 
+    # NEW:
+    df_base.to_csv(subdir_full_path+'/'+this_date+'/df_base.csv', )
+
     base_series, base_series_weighted, base_series_weighted_true = create_delay_series(df_base, untruthful_airline=untruthful_airline)
     airline_delay_caps = base_series.to_dict()
 
@@ -147,6 +150,9 @@ def run_day(subdir_name, this_date, run_type, airline='', untruthful_airline='',
 
         # Intra: Save Gurobi Results
         df_intra, f_dep, f_arr = create_df2(base_path, intra_path1, df1, F, untruthful_airline=untruthful_airline, airline_ls=airline_ls)
+        
+        # NEW:
+        df_intra.to_csv(subdir_full_path+'/'+this_date+'/df_intra.csv', )
 
         base_series, base_series_weighted, base_series_weighted_true = create_delay_series(df_intra, untruthful_airline=untruthful_airline)
         airline_delay_caps = base_series.to_dict()
@@ -202,6 +208,9 @@ def run_day(subdir_name, this_date, run_type, airline='', untruthful_airline='',
     # Alt: Save Gurobi Results
     airline_ls = []         # only pull one file
     df_alt, _, _ = create_df2(airline_path, airline_path, df1, F, untruthful_airline=untruthful_airline, airline_ls=airline_ls)
+
+    # NEW:
+    df_alt.to_csv(subdir_full_path+'/'+this_date+'/df_alt.csv', )
 
     base_series, base_series_weighted, base_series_weighted_true = create_delay_series(df_alt, untruthful_airline=untruthful_airline)
 
@@ -342,14 +351,14 @@ run_type = 'intra-alt-intra'
 max_increase_factor = 1.3
 
 
-folder_name = 'test_stochastic_not_mvp'
+folder_name = 'stochastic_lambda5_surge10_eval_mvf_test1'
 
 save_name = folder_name + '/' + run_type
 if not os.path.exists(save_name):
     os.makedirs(save_name)
 
 this_date = date(2019, 5, 1)
-end_date = date(2019, 5, 30)
+end_date = date(2019, 5, 1)
 delta = timedelta(days=1)
 
 coordinating_airline = ['AA'] # start with AA

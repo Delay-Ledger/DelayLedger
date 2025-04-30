@@ -17,10 +17,151 @@ from gurobipy import GRB
 from params import *
 
 
-def expected_pv(T, lambda_parameter, slope, surge):
-    # slope is in dollars per minute, T is in hours
-    # must get a dollars per minute expected value slope
-    return (T * 60 * slope + surge * (1/lambda_parameter) * T)/T/60
+# def expected_pv(T, lambda_parameter, slope, surge):
+#     # slope is in dollars per minute, T is in hours
+#     # must get a dollars per minute expected value slope
+#     return (T * 60 * slope + surge * (1/lambda_parameter) * T)/T/60
+
+# def piecewise_constraints ():
+#     # new constraints
+#     piecewise_breakpoints, functions_value_breakpoints = mean_value_objective_function(500, pv[f])
+#     B = len(piecewise_breakpoints)
+
+#     # add vars
+#     tau_tuples = [(f, j) for f in F for j in range(B)]
+
+#     y_tuples = [(f, j) for f in F for j in range(1, B)]
+
+#     tau = model.addVars(tau_tuples, vtype=GRB.CONTINUOUS, lb=0, ub=1, name="tau")  # j = 0..|B|
+#     y = model.addVars(y_tuples, vtype=GRB.BINARY, name="y")  # j = 1..|B|
+
+#     # add constraints
+#     # i want these to be valid for all f in F
+#     model.addConstr(tau[0] <= y[1], name="tau0_leq_y1")
+#     for j in range(1, len(B)-1):
+#         model.addConstr(tau[j] <= y[j] + y[j+1], name=f"tau_leq_{j}_{j+1}")
+#     model.addConstr(tau[len(B)-1] <= y[len(B)-1], name="tau_last_leq")
+
+#     # sum constraints
+#     # i want these to be valid for all f in F
+#     model.addConstr(gp.quicksum(tau[j] for j in B) == 1, name="sum_tau")
+#     model.addConstr(gp.quicksum(y[j] for j in B[1:]) == 1, name="sum_y")
+
+#     # di[f] constraint
+#     model.addConstr(
+#         di[f] == gp.quicksum(piecewise_breakpoints[j] * tau[j] for j in range(B)),
+#         name=f"link_delay_{f}"
+#     )
+
+#     # cost variable
+#     costs = {j: functions_value_breakpoints[j] for j in range(B)}
+
+def piecewise_constraints(model, F, pv, di):
+    """
+    Adds flight-specific piecewise delay constraints for all flights f in F.
+
+    Args:
+        model: Gurobi model
+        F: list of flight identifiers
+        pv: dict mapping flight f to its private valuation
+        di: delay variables in model
+
+    Returns:
+        tau: Gurobi tupledict for tau[f, j]
+        y: Gurobi tupledict for y[f, j]
+        costs_dict: {f: {j: cost}} for reference
+        costs: (f,j) tuple dictionary
+    """
+
+    tau = {}  # (f, j) → variable
+    y = {}
+    costs = {}
+
+    for f in F:
+        # Flight-specific breakpoints and costs
+        piecewise_breakpoints, functions_value_breakpoints = mean_value_objective_function(500, pv[f])
+        B = len(piecewise_breakpoints)
+        # costs = {j: functions_value_breakpoints[j] for j in range(B)}
+        # costs_dict[f] = costs
+
+        # cost function
+        for j, val in enumerate(functions_value_breakpoints):
+            costs[f, j] = val
+
+        # Add tau[f,j] and y[f,j] variables
+        for j in range(B):
+            tau[f, j] = model.addVar(lb=0, ub=1, vtype=GRB.CONTINUOUS, name=f"tau_{f}_{j}")
+        for j in range(1, B):
+            y[f, j] = model.addVar(vtype=GRB.BINARY, name=f"y_{f}_{j}")
+
+        # Constraint: τ_j ≤ y_j + y_{j+1}
+        model.addConstr(tau[f, 0] <= y[f, 1], name=f"tau0_leq_y1_{f}")
+        for j in range(1, B - 1):
+            model.addConstr(tau[f, j] <= y[f, j] + y[f, j + 1], name=f"tau_leq_{f}_{j}_{j+1}")
+        model.addConstr(tau[f, B - 1] <= y[f, B - 1], name=f"tau_last_leq_{f}")
+
+        # Convex sum of τ_j and y_j
+        model.addConstr(gp.quicksum(tau[f, j] for j in range(B)) == 1, name=f"sum_tau_{f}")
+        model.addConstr(gp.quicksum(y[f, j] for j in range(1, B)) == 1, name=f"sum_y_{f}")
+
+        # Delay = sum(breakpoints[j] * τ_j)
+        model.addConstr(
+            di[f] == gp.quicksum(piecewise_breakpoints[j] * tau[f, j] for j in range(B)),
+            name=f"link_delay_{f}"
+        )
+
+    from gurobipy import tupledict
+    return tupledict(tau), tupledict(y), costs
+
+def mean_value_objective_function(n,vf):
+    """
+    This function samples many iterations of the stochastically-generated
+    piecewise linear functions and finds an average of all of the problems
+    in an attempt to create the mean value problem.
+
+    First, n number of samples are generated. Each of these samples will have
+    their own set of breakpoints (at which surges in cost rate will occur). 
+    Then, the mean function takes all of these breakpoints and calculates the
+    average across all samples for each point.
+
+    n: number of samples to draw
+    vf: the starting flight value for a given flight
+
+    Returns: two arrays
+    mean_breakpoints: all breakpoints that were generated from sampling
+    mean_y: average across all functions for each breakpoint
+
+    note: the arrivals array will always have 0 in its first index
+    """
+    functions_list = []
+    breakpoints_list = []
+    for i in range(0,n):
+        # sample a set of linear breakpoints (cost rate surges)
+        breakpoints = cost_jump_arrivals(lambda_parameter,round_T)
+        # record all the mean function
+        for j in range(len(breakpoints)):
+            breakpoints_list.append(breakpoints[j])
+
+        # create a piecewise function from this sample
+        f = create_piecewise_function(breakpoints, slope=vf, surge=surge)
+        # record all functions for the mean function
+        functions_list.append(f)
+    
+    breakpoints_list.append(round_T*4) # adding the end point of the round as well
+
+    mean_breakpoints = sorted(set(breakpoints_list))
+    # print("Number of Breakpoints:", len(clean_breakpoints_mvp))
+    # print("Number of Function Samples:", len(functions_mvp))
+
+    mean_y = []
+
+    for b in mean_breakpoints:
+        values_at_breakpoint = []
+        for fn in functions_list:
+            values_at_breakpoint.append(fn(b)) 
+        mean_y.append(np.mean(values_at_breakpoint))
+
+    return mean_breakpoints, mean_y
 
 def cost_jump_arrivals(lambda_parameter, T):
     """
@@ -46,16 +187,20 @@ def cost_jump_arrivals(lambda_parameter, T):
 
     # create a list of arrival times that are cumulative
     # with intervals between arrivals being exponentially distributed
-    while arrivals[i] < T:
+    while arrivals[i] < T*4:
         # randomly sample exponential variable with parameter lambda
         v = np.random.exponential(lambda_parameter)
+        v_hours = np.floor(v)
+        v_15mins = np.round(((v - v_hours)*60)/15) # fractional part of hour -> minutes -> 15min bins
+
+        v_15bin = v_hours*4 + v_15mins
         
         # we are only interested in costs within the round
-        if v + arrivals[i] > T:
+        if v_15bin + arrivals[i] > T*4:
             break
 
         # add cumulative values to arrivals array
-        arrivals.append(v + arrivals[i])
+        arrivals.append(v_15bin + arrivals[i])
 
         #iterate
         i += 1
@@ -64,14 +209,19 @@ def cost_jump_arrivals(lambda_parameter, T):
 
 def create_piecewise_function(breakpoints, slope, surge):
     """
+    NEW: need to change piecewise breakpoints output to be in 15min bins, then this function needs to output a function based on 15 min bins
+
     Creates a piecewise function with dynamically generated function mappings.
     The number of breakpoints are random, so a dynamic function was needed.
-    Each piecewise break defines the moment when a cost surge. The breaks
-    are in units of hours (since the round length is in hours), so we have
-    to be careful to change these to units of minutes, as this functions 
-    takes minutes.
+    Each piecewise break defines when the rate of the cost per delay changes.
+    The breaks are in units of hours (since the round length is in hours),
+    so we need to be careful to change these to units of minutes, as this  
+    function operates in minutes.
     The values of the slopes and surge for each piecewise interval may be 
     different in the future, but they are set to the same value right now.
+
+    This a piecewise continuous function, where each arrival prompts the 
+    change of the functions slope.
 
     breakpoints: list of arrival times for each cost surge, in hours
     slope: the slope of the linear segments, in units of dollars per minute
@@ -81,6 +231,7 @@ def create_piecewise_function(breakpoints, slope, surge):
     """
 
     num_segments = len(breakpoints)
+    # print(breakpoints)
     
     # tracker_f created in order to track function values during piecewise construction
     tracker_f = lambda x: slope * x  
@@ -96,20 +247,79 @@ def create_piecewise_function(breakpoints, slope, surge):
         else:
             # Apply cost surge at each breakpoint
             # Breakpoints are in hours, convert to minutes
-            y_piecewise = tracker_f(int(breakpoints[i]) * 60) + surge  
+
+            y_piecewise = tracker_f(breakpoints[i])  #breakpoints[i] * 60
+            # plt.plot(breakpoints[i], 0, marker='o', linestyle='None', color='red', markersize = 2)  # 'o' = dot marker
+
+            # y_piecewise = tracker_f(breakpoints[i] * 60) + surge
+
             # y = ax + b --> b =  y - ax
-            intercept = y_piecewise - slope * int(breakpoints[i]) * 60 # Solve for new function
-            tracker_f = lambda x, intercept=intercept: slope * x + intercept  # Update tracker
+            intercept = y_piecewise - (slope + i*surge) * breakpoints[i] # Solve for new function
+            tracker_f = lambda x, intercept=intercept, i=i: (slope + i*surge) * x + intercept  # Update tracker
+
+            # intercept = y_piecewise - slope * breakpoints[i] * 60
+            # tracker_f = lambda x, intercept=intercept: slope * x + intercept #update tracker
+
             # Add next piecewise interval
-            function_list.append(lambda x, intercept=intercept: slope * x + intercept) 
+            function_list.append(lambda x, intercept=intercept, i=i: (slope + i*surge) * x + intercept) 
+            # function_list.append(lambda x, intercept=intercept: slope * x + intercept)
 
     # Create conditions as boolean masks to pass into np.piecewise function
     def condition_masks(x):
-        masks = [(breakpoints[i]*60 <= x) & (x < breakpoints[i+1]*60) for i in range(len(breakpoints) - 1)]
-        masks.append(x >= breakpoints[-1]*60)  # Last condition (x ≥ last breakpoint)
+        masks = [(breakpoints[i] <= x) & (x < breakpoints[i+1]) for i in range(len(breakpoints) - 1)]
+        masks.append(x >= breakpoints[-1])  # Last condition (x ≥ last breakpoint)
         return masks
 
     return lambda x: np.piecewise(x, condition_masks(x), function_list)
+
+# def create_piecewise_function(breakpoints, slope, surge):
+#     """
+#     Creates a piecewise function with dynamically generated function mappings.
+#     The number of breakpoints are random, so a dynamic function was needed.
+#     Each piecewise break defines the moment when a cost surge. The breaks
+#     are in units of hours (since the round length is in hours), so we have
+#     to be careful to change these to units of minutes, as this functions 
+#     takes minutes.
+#     The values of the slopes and surge for each piecewise interval may be 
+#     different in the future, but they are set to the same value right now.
+
+#     breakpoints: list of arrival times for each cost surge, in hours
+#     slope: the slope of the linear segments, in units of dollars per minute
+#     surge: the magnitude of the cost surge at each piecewise breakpoint
+
+#     Returns: a function that evaluates piecewise expressions
+#     """
+
+#     num_segments = len(breakpoints)
+    
+#     # tracker_f created in order to track function values during piecewise construction
+#     tracker_f = lambda x: slope * x  
+
+#     # List to store each sub-function as a part of the piecewise function
+#     function_list = []
+
+#     # Create function segments dynamically
+#     for i in range(num_segments):
+#         if i == 0:
+#             tracker_f = lambda x: slope * x
+#             function_list.append(lambda x: slope * x)  # First segment (before first breakpoint)
+#         else:
+#             # Apply cost surge at each breakpoint
+#             # Breakpoints are in hours, convert to minutes
+#             y_piecewise = tracker_f(breakpoints[i] * 60) + surge  
+#             # y = ax + b --> b =  y - ax
+#             intercept = y_piecewise - slope * breakpoints[i] * 60 # Solve for new function
+#             tracker_f = lambda x, intercept=intercept: slope * x + intercept  # Update tracker
+#             # Add next piecewise interval
+#             function_list.append(lambda x, intercept=intercept: slope * x + intercept) 
+
+#     # Create conditions as boolean masks to pass into np.piecewise function
+#     def condition_masks(x):
+#         masks = [(breakpoints[i]*60 <= x) & (x < breakpoints[i+1]*60) for i in range(len(breakpoints) - 1)]
+#         masks.append(x >= breakpoints[-1]*60)  # Last condition (x ≥ last breakpoint)
+#         return masks
+
+#     return lambda x: np.piecewise(x, condition_masks(x), function_list)
 # %%
 def record_changes(df_new, df_base, subdir_full_path, this_date, df_change_name = 'df_changes.csv'):
     # example inputs
@@ -293,20 +503,22 @@ def create_df(input_csv, read_path, date_of_interest, untruthful_airline = ''):
     # Sample for flight cost
     # NEW: make capability if set to stochastic, then make flight_val just equal to slope
     # otherwise it should be expected vlaue
-    #flight_val = np.random.randint(1, 10, df1.shape[0])
-    flight_val = np.loadtxt('test_stochastic/intra-alt-intra/'+date_of_interest+'/flight_val.csv', delimiter=",", skiprows=1, usecols=2, dtype=int)
+    # flight_val = np.random.randint(1, 10, df1.shape[0])
+
+    # NEW: using the same random selections across all runs
+    flight_val = np.loadtxt('/Users/tatabas/Desktop/DelayLedger/eval_new_piecewise_30days/intra-alt-intra/'+date_of_interest+'/flight_val.csv', delimiter=",", skiprows=1, usecols=2, dtype=int)
     
     df1['flight_val'] = flight_val
-    #flight_val.to_csv(date_of_interest+'_flightvals.csv', )
+    # flight_val.to_csv(date_of_interest+'_flightvals.csv', )
     pd.DataFrame(zip(df1['tail_number'], flight_val), columns=["tail_number", "flight_val"]).to_csv(read_path+'/flight_val.csv')
 
     # Expected flight value
     # df1['expected_flight_val'] = [expected_pv(T=round_T,lambda_parameter=lambda_parameter,slope=flight_val[i],
-    #                                  surge=surge) for i in range(df1.shape[0])]
-    df1['expected_flight_val'] = flight_val # setting the objective function value to be the flight value as well
+    #                                   surge=surge) for i in range(df1.shape[0])]
+    # df1['expected_flight_val'] = flight_val # setting the objective function value to be the flight value as well
 
     df1['true_flight_val'] = df1['flight_val']
-    df1['true_expected_flight_val'] = df1['expected_flight_val']
+    # df1['true_expected_flight_val'] = df1['expected_flight_val']
     if untruthful_airline != '':
         df1.loc[(df1.marketing_airline_network == untruthful_airline), 'flight_val'] = untruthful_val
 
@@ -566,10 +778,10 @@ def create_gurobi_vars(read_path, df1, untruthful_airline = '', input_dep_cap = 
 
     # private flight value
     # NEW: expected_value in objective function
-    pv = dict(zip(df1.flt_name, zip(df1.flight_val, df1.expected_flight_val)))
+    pv = dict(zip(df1.flt_name, df1.flight_val))
 
     if untruthful_airline != '':
-        pv = dict(zip(df1.flt_name, zip(df1.true_flight_val, df1.true_expected_flight_val)))   
+        pv = dict(zip(df1.flt_name, df1.true_flight_val))   
     
 
     # create high/low priority flight lists
@@ -870,39 +1082,92 @@ def run_gurobi(save_path, ref_path, F, F_a, T_dep, T_arr, tt, T, orig, dest, D, 
 
     F_all = list(F)
 
-    # NEW: pv is a tuple for each flight (flight_val, expected_flight_val)
     # if airline in control or running intra-deconfliction, only care about their own flights
+
+    F = [f for f in F if airline_code in f]
+
+    #NEW: we are creating many instants of the piecewise functions
+
+    y = model.addVars(F,name="y") # add: this back in 
+    x = model.addVars(F, name='xvar')
+
     if boolAirlineControl or bool_intra:
-        F = [f for f in F if airline_code in f]
+        # NEW
+        # add: this back in
+        for f in F:
+            piecewise_breakpoints, functions_value_breakpoints = mean_value_objective_function(500, pv[f])
+            # x variable needs to act like delay
+            model.addConstr(di[f] >= x[f])
+            model.addConstr(x[f] >= 0)
+            model.addGenConstrPWL(x[f], y[f], piecewise_breakpoints, functions_value_breakpoints, name=f"pwl_cost_function_{f}")
+
+        # piecewise variables
+        # tau, y, costs = piecewise_constraints(model, F, pv, di)
+
         model.setObjective(
                 # + c_a*sum(pv[f]*sum(w[f,t]*(t-r[f]) for t in T_arr[f])
                 #         - sum(v[f,t]*(t-d[f]) for t in T_dep[f])        # airborne delay for full flights only
                 #             for f in F)
-                + c_g*sum(pv[f][1]*di[f] #sum(w[f,t]*(t-r[f]) for t in T_arr[f])        # arrival delay
-                        for f in F)
+                #+ c_g*sum(pv[f][1]*di[f] #sum(w[f,t]*(t-r[f]) for t in T_arr[f])        # arrival delay
+                #        for f in F)
+                # + c_g*sum(pv[f]*di[f]
+                #           for f in F)
+                + c_g*sum(y[f] #sum  #arrival delay 
+                          for f in F)
+                # + c_g*sum(costs[f,j] * tau[f, j]
+                #           for (f,j) in costs)
 
                 # + c_g*sum(pv[f]*ddi[f] #sum(v[f,t]*(t-d[f]) for t in T_dep[f])        # ground delay
                 #         for f in F)
                 , GRB.MINIMIZE);
-
+    
+    # NEW: fix this bottom part but not pertinent right now
     else:
         if boolFullSharing:
             if boolFullSharingAbstract:
                 for f in F:
-                    if f in F_high_priority_ls: # NEW: might have to find expected values here
-                        pv[f][0] = high_priority_b
+                    if f in F_high_priority_ls:
+                        pv[f] = high_priority_b
                     elif f in F_med_priority_ls:
-                        pv[f][0] = low_priority_a
+                        pv[f] = low_priority_a
                     elif f in F_low_priority_ls:
-                        pv[f][0] = 0
+                        pv[f] = 0
+
+            # NEW
+            for f in F:
+                piecewise_breakpoints, functions_value_breakpoints = mean_value_objective_function(500, pv[f])
+                # x variable needs to act like delay
+                model.addConstr(di[f] >= x[f])
+                model.addConstr(x[f] >= 0)
+                model.addGenConstrPWL(x[f], y[f], piecewise_breakpoints, functions_value_breakpoints, name=f"pwl_cost_function_{f}")
+
+            # tau, y, costs = piecewise_constraints(model, F, pv, di)
+
             model.setObjective(
-                    + c_g*sum(pv[f][1]*di[f] #sum(w[f,t]*(t-r[f]) for t in T_arr[f])        # arrival delay
+                    + c_g*sum(y[f] #sum(w[f,t]*(t-r[f]) for t in T_arr[f])        # arrival delay
                             for f in F)
+                    # + c_g*sum(pv[f]*di[f]
+                    #       for f in F)
+                    # + c_g*sum(costs[f,j] * tau[f, j]
+                    #       for (f,j) in costs)
                     , GRB.MINIMIZE);
         else:
+            for f in F:
+                piecewise_breakpoints, functions_value_breakpoints = mean_value_objective_function(500, pv[f])
+                # x variable needs to act like delay
+                model.addConstr(di[f] >= x[f])
+                model.addConstr(x[f] >= 0)
+                model.addGenConstrPWL(x[f], y[f], piecewise_breakpoints, functions_value_breakpoints, name=f"pwl_cost_function_{f}")
+            
+            # tau, y, costs = piecewise_constraints(model, F, pv, di)
+
             model.setObjective(
-                    + c_g*sum(di[f] #sum(w[f,t]*(t-r[f]) for t in T_arr[f])        # arrival delay
+                    + c_g*sum(y[f] #sum(w[f,t]*(t-r[f]) for t in T_arr[f])        # arrival delay
                             for f in F)
+                    # + c_g*sum(pv[f]*di[f]
+                    #       for f in F)
+                    # + c_g*sum(costs[f,j] * tau[f, j]
+                    #       for (f,j) in costs)
                     , GRB.MINIMIZE);
 
 
@@ -959,6 +1224,22 @@ def run_gurobi(save_path, ref_path, F, F_a, T_dep, T_arr, tt, T, orig, dest, D, 
         
         deptimes = dict(keys=F_all)
         arrtimes = dict(keys=F_all)
+        
+
+        # if model.status == GRB.OPTIMAL:
+        #     for f in F_all:
+        #         deptimes[f] = {}
+        #         for t in T_dep[f]:
+        #             deptimes[f][t] = v[f,t].x
+
+        #     for f in F_all:
+        #         arrtimes[f] = {}
+        #         for t in T_arr[f]:
+        #             arrtimes[f][t] = w[f,t].x
+        # else:
+        #     print("No solution available — model status:", model.status)
+
+        # NEW: uncommented because this was the original
 
         for f in F_all:
             deptimes[f] = {}
@@ -1057,38 +1338,58 @@ def create_df2(read_path, output_path, df1, F, untruthful_airline='', airline_ls
     # NEW: piecewise calculation of functions
     # fix, we actually want the randomly generated slopes!
     
-    # df2['new_delay_15bin_weighted'] = df2['new_delay_15bin'] * df2['flight_val']
+    # df2['new_delay_15bin_weighted'] = df2['new_delay_15bin'] * df2['expected_flight_val']
 
-    stochastic_delay_weighted = np.zeros((df2.shape[0],1000))
-    for x in range(1000):
-        delay_weighted = np.zeros(df2.shape[0])
-        for idx in range(df2.shape[0]):
-            # Generate piecewise breaks for each flight
-            arrivals_array = cost_jump_arrivals(lambda_parameter, T=round_T) 
-            f = create_piecewise_function(arrivals_array,df2['flight_val'].iloc[idx],surge)
-            delay_weighted[idx] = f(df2['new_delay_15bin'].iloc[idx])
-        stochastic_delay_weighted[:,x] = delay_weighted
+    # stochastic_delay_weighted = np.zeros((df2.shape[0],500))
+    # for x in range(500):
+    #     delay_weighted = np.zeros(df2.shape[0])
+    #     for idx in range(df2.shape[0]):
+    #         # Generate piecewise breaks for each flight
+    #         arrivals_array = cost_jump_arrivals(lambda_parameter, T=round_T) 
+    #         f = create_piecewise_function(arrivals_array,df2['flight_val'].iloc[idx],surge)
+    #         delay_weighted[idx] = f(df2['new_delay_15bin'].iloc[idx])
+    #     stochastic_delay_weighted[:,x] = delay_weighted
     
-    simulated_delay_weighted = np.mean(stochastic_delay_weighted, axis=1, keepdims=True)  # (x, 1) array
+    # simulated_delay_weighted = np.mean(stochastic_delay_weighted, axis=1, keepdims=True)  # (x, 1) array
+
+    # df2['new_delay_15bin_weighted'] = simulated_delay_weighted
+
+    simulated_delay_weighted = np.zeros(df2.shape[0])
+    for idx in range(df2.shape[0]):
+        # generate mean value function
+        mvf_breakpoints, __ = mean_value_objective_function(500,df2['flight_val'].iloc[idx])
+        # make a piecewise function to be able to evaluate decisions
+        mvf_f = create_piecewise_function(mvf_breakpoints, df2['flight_val'].iloc[idx],surge)
+        simulated_delay_weighted[idx] = mvf_f(df2['new_delay_15bin'].iloc[idx])
 
     df2['new_delay_15bin_weighted'] = simulated_delay_weighted
 
     if untruthful_airline != '':
-        # df2['new_delay_15bin_weighted_true'] = df2['new_delay_15bin'] * df2['true_flight_val']
+        # df2['new_delay_15bin_weighted_true'] = df2['new_delay_15bin'] * df2['true_expected_flight_val']
         #see note above about true_flight_val it is just the same as flight_val for now
-        stochastic_delay_weighted = np.zeros((df2.shape[0],1000))
-        for x in range(1000):
-            delay_weighted = np.zeros(df2.shape[0])
-            for idx in range(df2.shape[0]):
-                # Generate piecewise breaks for each flight
-                arrivals_array = cost_jump_arrivals(lambda_parameter, T=round_T) 
-                f = create_piecewise_function(arrivals_array,df2['flight_val'].iloc[idx],surge)
-                delay_weighted[idx] = f(df2['new_delay_15bin'].iloc[idx])
-            stochastic_delay_weighted[:,x] = delay_weighted
+        # stochastic_delay_weighted = np.zeros((df2.shape[0],500))
+        # for x in range(500):
+        #     delay_weighted = np.zeros(df2.shape[0])
+        #     for idx in range(df2.shape[0]):
+        #         # Generate piecewise breaks for each flight
+        #         arrivals_array = cost_jump_arrivals(lambda_parameter, T=round_T) 
+        #         f = create_piecewise_function(arrivals_array,df2['true_flight_val'].iloc[idx],surge)
+        #         delay_weighted[idx] = f(df2['new_delay_15bin'].iloc[idx])
+        #     stochastic_delay_weighted[:,x] = delay_weighted
         
-        simulated_delay_weighted = np.mean(stochastic_delay_weighted, axis=1, keepdims=True)  # (x, 1) array
+        # simulated_delay_weighted = np.mean(stochastic_delay_weighted, axis=1, keepdims=True)  # (x, 1) array
 
-        df2['new_delay_15bin_weighted'] = simulated_delay_weighted
+        # df2['new_delay_15bin_weighted_true'] = simulated_delay_weighted
+
+        simulated_delay_weighted = np.zeros(df2.shape[0])
+        for idx in range(df2.shape[0]):
+            # generate mean value function
+            mvf_breakpoints, __ = mean_value_objective_function(500,df2['true_flight_val'].iloc[idx])
+            # make a piecewise function to be able to evaluate decisions
+            mvf_f = create_piecewise_function(mvf_breakpoints, df2['true_flight_val'].iloc[idx],surge)
+            simulated_delay_weighted[idx] = mvf_f(df2['new_delay_15bin'].iloc[idx])
+
+        df2['new_delay_15bin_weighted_true'] = simulated_delay_weighted
     
     # print('new delay: {} 15-min bins'.format(new_delay))        #[df2.new_delay_15bin > 0]
     # print('change in delay: {} 15-min bin'.format(df2.change_delay_15bin.sum()))
