@@ -144,6 +144,9 @@ def create_piecewise_function(breakpoints, slope, surge):
     # List to store each sub-function as a part of the piecewise function
     function_list = []
 
+    # Pre-first segment: constant slope before breakpoints[0]
+    function_list.append(lambda x: slope * x) # for x < breakpoints[0] (=0)
+
     # Create function segments dynamically
     for i in range(num_segments):
         if i == 0:
@@ -159,19 +162,21 @@ def create_piecewise_function(breakpoints, slope, surge):
             # y_piecewise = tracker_f(breakpoints[i] * 60) + surge
 
             # y = ax + b --> b =  y - ax
-            intercept = y_piecewise - (slope + i*surge) * breakpoints[i] # Solve for new function
-            tracker_f = lambda x, intercept=intercept, i=i: (slope + i*surge) * x + intercept  # Update tracker
+            adjusted_slope = slope + i * surge
+            intercept = y_piecewise - adjusted_slope * breakpoints[i] # Solve for new function
+            tracker_f = lambda x, a=adjusted_slope, b=intercept: a * x + b  # Update tracker
 
             # intercept = y_piecewise - slope * breakpoints[i] * 60
             # tracker_f = lambda x, intercept=intercept: slope * x + intercept #update tracker
 
             # Add next piecewise interval
-            function_list.append(lambda x, intercept=intercept, i=i: (slope + i*surge) * x + intercept) 
+            function_list.append(lambda x, a=adjusted_slope, b=intercept: a * x + b) 
             # function_list.append(lambda x, intercept=intercept: slope * x + intercept)
 
     # Create conditions as boolean masks to pass into np.piecewise function
     def condition_masks(x):
-        masks = [(breakpoints[i] <= x) & (x < breakpoints[i+1]) for i in range(len(breakpoints) - 1)]
+        masks = [x < breakpoints[0]]
+        masks += [(breakpoints[i] <= x) & (x < breakpoints[i+1]) for i in range(num_segments - 1)]
         masks.append(x >= breakpoints[-1])  # Last condition (x ≥ last breakpoint)
         return masks
 
@@ -353,7 +358,7 @@ def create_df(input_csv, read_path, date_of_interest, untruthful_airline = ''):
     # private flight value (between 1 and 10)
     np.random.seed(0)
     # df1['flight_val'] = np.random.randint(1, 10, df1.shape[0])
-    flight_val = np.loadtxt('/Users/tatabas/Desktop/DelayLedger/eval_new_piecewise_30days/intra-alt-intra/'+date_of_interest+'/flight_val.csv', delimiter=",", skiprows=1, usecols=2, dtype=int)
+    flight_val = np.loadtxt('eval_new_piecewise_30days/intra-alt-intra/'+date_of_interest+'/flight_val.csv', delimiter=",", skiprows=1, usecols=2, dtype=int)
     # print(flight_val)
     df1['flight_val'] = flight_val
 
@@ -1106,17 +1111,11 @@ def create_df2(read_path, output_path, df1, F, untruthful_airline='', airline_ls
     ####################
     ####################
 
-    # # compute private value (even if airline control was not run)
-    # df2['new_delay_15bin_weighted'] = df2['new_delay_15bin'] * df2['flight_val']
+    # compute private value (even if airline control was not run)
+    df2['new_delay_15bin_weighted'] = df2['new_delay_15bin'] * df2['flight_val']
 
-    # if untruthful_airline != '':
-    #     df2['new_delay_15bin_weighted_true'] = df2['new_delay_15bin'] * df2['true_flight_val']
-
-    # # compute private value (even if airline control was not run)
-    # df2['new_delay_15bin_weighted'] = 2
-
-    # if untruthful_airline != '':
-    #     df2['new_delay_15bin_weighted_true'] = 20
+    if untruthful_airline != '':
+        df2['new_delay_15bin_weighted_true'] = df2['new_delay_15bin'] * df2['true_flight_val']
 
     ####################
     ####################
@@ -1136,42 +1135,20 @@ def create_df2(read_path, output_path, df1, F, untruthful_airline='', airline_ls
 
     # df2['new_delay_15bin_weighted'] = simulated_delay_weighted
 
-    simulated_delay_weighted = np.zeros(df2.shape[0])
-    for idx in range(df2.shape[0]):
-        # generate mean value function
-        mvf_breakpoints, __ = mean_value_objective_function(500,df2['flight_val'].iloc[idx])
-        # make a piecewise function to be able to evaluate decisions
-        mvf_f = create_piecewise_function(mvf_breakpoints, df2['flight_val'].iloc[idx], surge)
-        simulated_delay_weighted[idx] = mvf_f(df2['new_delay_15bin'].iloc[idx])
-
-    df2['new_delay_15bin_weighted'] = simulated_delay_weighted
-
-    if untruthful_airline != '':
-        # df2['new_delay_15bin_weighted_true'] = df2['new_delay_15bin'] * df2['true_expected_flight_val']
-        #see note above about true_flight_val it is just the same as flight_val for now
-        # stochastic_delay_weighted = np.zeros((df2.shape[0],500))
-        # for x in range(500):
-        #     delay_weighted = np.zeros(df2.shape[0])
-        #     for idx in range(df2.shape[0]):
-        #         # Generate piecewise breaks for each flight
-        #         arrivals_array = cost_jump_arrivals(lambda_parameter, T=round_T) 
-        #         f = create_piecewise_function(arrivals_array,df2['true_flight_val'].iloc[idx],surge)
-        #         delay_weighted[idx] = f(df2['new_delay_15bin'].iloc[idx])
-        #     stochastic_delay_weighted[:,x] = delay_weighted
+    # if untruthful_airline != '':
+    #     stochastic_delay_weighted = np.zeros((df2.shape[0],500))
+    #     for x in range(500):
+    #         delay_weighted = np.zeros(df2.shape[0])
+    #         for idx in range(df2.shape[0]):
+    #             # Generate piecewise breaks for each flight
+    #             arrivals_array = cost_jump_arrivals(lambda_parameter, T=round_T) 
+    #             f = create_piecewise_function(arrivals_array,df2['true_flight_val'].iloc[idx],surge)
+    #             delay_weighted[idx] = f(df2['new_delay_15bin'].iloc[idx])
+    #         stochastic_delay_weighted[:,x] = delay_weighted
         
-        # simulated_delay_weighted = np.mean(stochastic_delay_weighted, axis=1, keepdims=True)  # (x, 1) array
+    #     simulated_delay_weighted = np.mean(stochastic_delay_weighted, axis=1, keepdims=True)  # (x, 1) array
 
-        # df2['new_delay_15bin_weighted_true'] = simulated_delay_weighted
-
-        simulated_delay_weighted = np.zeros(df2.shape[0])
-        for idx in range(df2.shape[0]):
-            # generate mean value function
-            mvf_breakpoints, mvf_values_at_breakpoints = mean_value_objective_function(500,df2['true_flight_val'].iloc[idx])
-            # make a piecewise function to be able to evaluate decisions
-            mvf_f = create_piecewise_function(mvf_breakpoints, df2['true_flight_val'].iloc[idx], surge)
-            simulated_delay_weighted[idx] = mvf_f(df2['new_delay_15bin'].iloc[idx])
-
-        df2['new_delay_15bin_weighted_true'] = simulated_delay_weighted
+    #     df2['new_delay_15bin_weighted_true'] = simulated_delay_weighted
     
     ####################
     ####################

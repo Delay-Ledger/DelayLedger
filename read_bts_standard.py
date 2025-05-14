@@ -342,14 +342,15 @@ run_type = 'intra-alt-intra'
 max_increase_factor = 1.3
 
 
-folder_name = 'standard_decisions_eval_mvf_lambda5_surge10_test2'
+# folder_name = 'standard_decisions_eval_mvf_lambda5_surge10_test30'
+folder_name = 'standard_decisions_eval_standard_30days'
 
 save_name = folder_name + '/' + run_type
 if not os.path.exists(save_name):
     os.makedirs(save_name)
 
 this_date = date(2019, 5, 1)
-end_date = date(2019, 5, 2)
+end_date = date(2019, 5, 30)
 delta = timedelta(days=1)
 while this_date <= end_date:
     print(this_date.strftime("%Y-%m-%d"))

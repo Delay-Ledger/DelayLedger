@@ -29,7 +29,7 @@ def collect_airline_effect_data(df_dlm, plot_type):
 
     # loop through dates and record delay changes per airline and control
     this_date = date(2019, 5, 1)
-    end_date = date(2019, 5, 10) # CHANGE:
+    end_date = date(2019, 5, 30) # CHANGE:
     delta = timedelta(days=1)
 
     # determine which airline was in control
@@ -107,16 +107,22 @@ airline_symbols = {
 # folder_name = 'exp30_no_repeats_40'
 # folder_name = 'exp30_ledger_wrt_intra_40'
 # folder_name = 'exp30_may'
-# folder_name = 'exp30_may_tot_delay_cant_incr'
+# folder_name = 'exp30_may_tot_delaycant_incr'
 # folder_name = 'exp30_may_tot_delay_cant_incr_no_cxn_bonus'
 # folder_name = 'test30'
 # folder_name = 'standard_decisions_eval_stochastic3'
 
-# folder_name = 'standard_decisions_eval_stochastic_lambda5_surge10'
-# folder_name = 'test30_with_flightvals2'
+# folder_name = 'standard_decisions_eval_stochastic_lambda5_surge10
 # folder_name = 'eval_new_piecewise_30days_fixed_priorities'
 # folder_name = 'eval_new_piecewise_30days'
-folder_name = 'standard_decisions_eval_mvf_lambda5_surge10'
+# folder_name = 'standard_decisions_eval_mvf_lambda5_surge10'
+
+# folder_name = 'standard_decisions_eval_mvf_lambda5_surge10_test30'
+
+
+# folder_name = 'stochastic_lambda5_surge10_eval_mvf_test30'
+# folder_name = 'standard_decisions_eval_standard_30days'
+folder_name = 'standard_decisions_eval_mvf_lambda5_surge10_test30'
 
 # CHANGE:
 
@@ -128,7 +134,7 @@ if not os.path.exists(folder_name+'/figures'):
 # count number of flights
 # Re-process data
 this_date = date(2019, 5, 1)
-end_date = date(2019, 5, 10) # CHANGE:
+end_date = date(2019, 5, 30) # CHANGE:
 delta = timedelta(days=1)
 subdir_full_path = folder_name + '/intra-alt-intra'
 str_date = this_date.strftime("%Y-%m-%d")

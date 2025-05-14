@@ -22,7 +22,7 @@ from params import *
 #     # must get a dollars per minute expected value slope
 #     return (T * 60 * slope + surge * (1/lambda_parameter) * T)/T/60
 
-# def piecewise_constraints ():
+# def piecewise_constraints():
 #     # new constraints
 #     piecewise_breakpoints, functions_value_breakpoints = mean_value_objective_function(500, pv[f])
 #     B = len(piecewise_breakpoints)
@@ -75,14 +75,15 @@ def piecewise_constraints(model, F, pv, di):
 
     tau = {}  # (f, j) → variable
     y = {}
-    costs = {}
+    costs = {}  # (f, j) → variable
 
     for f in F:
         # Flight-specific breakpoints and costs
         piecewise_breakpoints, functions_value_breakpoints = mean_value_objective_function(500, pv[f])
+        piecewise_breakpoints.insert(0, -1*round_T*4) # maximum value in negative direction (bring flight earlier)
+        functions_value_breakpoints.insert(0, -1*round_T*4*pv[f]) # value of cost decrease based on initial v_f
+
         B = len(piecewise_breakpoints)
-        # costs = {j: functions_value_breakpoints[j] for j in range(B)}
-        # costs_dict[f] = costs
 
         # cost function
         for j, val in enumerate(functions_value_breakpoints):
@@ -104,11 +105,14 @@ def piecewise_constraints(model, F, pv, di):
         model.addConstr(gp.quicksum(tau[f, j] for j in range(B)) == 1, name=f"sum_tau_{f}")
         model.addConstr(gp.quicksum(y[f, j] for j in range(1, B)) == 1, name=f"sum_y_{f}")
 
-        # Delay = sum(breakpoints[j] * τ_j)
-        model.addConstr(
-            di[f] == gp.quicksum(piecewise_breakpoints[j] * tau[f, j] for j in range(B)),
-            name=f"link_delay_{f}"
-        )
+        # # Delay = sum(breakpoints[j] * τ_j)
+        # model.addConstr(
+        #     x[f] == gp.quicksum(piecewise_breakpoints[j] * tau[f, j] for j in range(B)),
+        #     name=f"link_delay_{f}"
+        # )
+
+        # convex combination delay >= di_f
+        model.addConstr(gp.quicksum(piecewise_breakpoints[j] * tau[f, j] for j in range(B)) >= di[f])
 
     from gurobipy import tupledict
     return tupledict(tau), tupledict(y), costs
@@ -239,6 +243,9 @@ def create_piecewise_function(breakpoints, slope, surge):
     # List to store each sub-function as a part of the piecewise function
     function_list = []
 
+    # Pre-first segment: constant slope before breakpoints[0]
+    function_list.append(lambda x: slope * x) # for x < breakpoints[0] (=0)
+
     # Create function segments dynamically
     for i in range(num_segments):
         if i == 0:
@@ -254,19 +261,21 @@ def create_piecewise_function(breakpoints, slope, surge):
             # y_piecewise = tracker_f(breakpoints[i] * 60) + surge
 
             # y = ax + b --> b =  y - ax
-            intercept = y_piecewise - (slope + i*surge) * breakpoints[i] # Solve for new function
-            tracker_f = lambda x, intercept=intercept, i=i: (slope + i*surge) * x + intercept  # Update tracker
+            adjusted_slope = slope + i * surge
+            intercept = y_piecewise - adjusted_slope * breakpoints[i] # Solve for new function
+            tracker_f = lambda x, a=adjusted_slope, b=intercept: a * x + b  # Update tracker
 
             # intercept = y_piecewise - slope * breakpoints[i] * 60
             # tracker_f = lambda x, intercept=intercept: slope * x + intercept #update tracker
 
             # Add next piecewise interval
-            function_list.append(lambda x, intercept=intercept, i=i: (slope + i*surge) * x + intercept) 
+            function_list.append(lambda x, a=adjusted_slope, b=intercept: a * x + b) 
             # function_list.append(lambda x, intercept=intercept: slope * x + intercept)
 
     # Create conditions as boolean masks to pass into np.piecewise function
     def condition_masks(x):
-        masks = [(breakpoints[i] <= x) & (x < breakpoints[i+1]) for i in range(len(breakpoints) - 1)]
+        masks = [x < breakpoints[0]]
+        masks += [(breakpoints[i] <= x) & (x < breakpoints[i+1]) for i in range(num_segments - 1)]
         masks.append(x >= breakpoints[-1])  # Last condition (x ≥ last breakpoint)
         return masks
 
@@ -506,7 +515,7 @@ def create_df(input_csv, read_path, date_of_interest, untruthful_airline = ''):
     # flight_val = np.random.randint(1, 10, df1.shape[0])
 
     # NEW: using the same random selections across all runs
-    flight_val = np.loadtxt('/Users/tatabas/Desktop/DelayLedger/eval_new_piecewise_30days/intra-alt-intra/'+date_of_interest+'/flight_val.csv', delimiter=",", skiprows=1, usecols=2, dtype=int)
+    flight_val = np.loadtxt('eval_new_piecewise_30days/intra-alt-intra/'+date_of_interest+'/flight_val.csv', delimiter=",", skiprows=1, usecols=2, dtype=int)
     
     df1['flight_val'] = flight_val
     # flight_val.to_csv(date_of_interest+'_flightvals.csv', )
@@ -1072,6 +1081,48 @@ def run_gurobi(save_path, ref_path, F, F_a, T_dep, T_arr, tt, T, orig, dest, D, 
     #                             for f in F if airline in f) <= max_increase_factor*airline_delay_caps[airline])
 
     """
+    Piecewise CONSTRAINTS
+    """
+    print('initializing piecewise constraints...')
+
+    F_all = list(F)
+
+    # 05/06 changing bool logic to make changes before the functions, refer to standard file for original
+    if boolAirlineControl or bool_intra:
+        # if airline in control or running intra-deconfliction, only care about their own flights
+        F = [f for f in F if airline_code in f]
+    else:
+        if boolFullSharing:
+            if boolFullSharingAbstract:
+                for f in F:
+                    if f in F_high_priority_ls:
+                        pv[f] = high_priority_b
+                    if f in F_med_priority_ls:
+                        pv[f] = low_priority_a
+                    if f in F_low_priority_ls:
+                        pv[f] = 0
+
+    y = model.addVars(F,name="piecewise_cost")
+    x = model.addVars(F,name="piecewise_delay")
+
+    for f in F:
+        piecewise_breakpoints, function_value_breakpoints = mean_value_objective_function(500, pv[f])
+
+        # adding negative value capabilities
+        piecewise_breakpoints.insert(0, -1*round_T*4) # maximum value in negative direction (bring flight earlier)
+        function_value_breakpoints.insert(0, -1*round_T*4*pv[f]) # value of cost decrease based on initial v_f
+
+        # x varaible needs to act like delay
+        model.addConstr(x[f] >= di[f])
+        # model.addConstr(x[f] >= 0) # the delay can be negative (bring flight earlier)
+        model.addGenConstrPWL(x[f], y[f], piecewise_breakpoints, function_value_breakpoints, name=f"pwl_cost_function_{f}")
+    
+    # piecewise variables
+    # tau, y, costs = piecewise_constraints(model, F, pv, di)
+
+    model.update()
+
+    """
     OBJECTIVE FUNCTION
     """
     print('initializing objective function...')
@@ -1080,96 +1131,27 @@ def run_gurobi(save_path, ref_path, F, F_a, T_dep, T_arr, tt, T, orig, dest, D, 
     c_a = 3
     c_g = 1
 
-    F_all = list(F)
-
-    # if airline in control or running intra-deconfliction, only care about their own flights
-
-    F = [f for f in F if airline_code in f]
-
-    #NEW: we are creating many instants of the piecewise functions
-
-    y = model.addVars(F,name="y") # add: this back in 
-    x = model.addVars(F, name='xvar')
-
-    if boolAirlineControl or bool_intra:
-        # NEW
-        # add: this back in
-        for f in F:
-            piecewise_breakpoints, functions_value_breakpoints = mean_value_objective_function(500, pv[f])
-            # x variable needs to act like delay
-            model.addConstr(di[f] >= x[f])
-            model.addConstr(x[f] >= 0)
-            model.addGenConstrPWL(x[f], y[f], piecewise_breakpoints, functions_value_breakpoints, name=f"pwl_cost_function_{f}")
-
-        # piecewise variables
-        # tau, y, costs = piecewise_constraints(model, F, pv, di)
-
+    if boolAirlineControl or bool_intra or boolFullSharing or boolFullSharingAbstract:
         model.setObjective(
-                # + c_a*sum(pv[f]*sum(w[f,t]*(t-r[f]) for t in T_arr[f])
-                #         - sum(v[f,t]*(t-d[f]) for t in T_dep[f])        # airborne delay for full flights only
-                #             for f in F)
-                #+ c_g*sum(pv[f][1]*di[f] #sum(w[f,t]*(t-r[f]) for t in T_arr[f])        # arrival delay
-                #        for f in F)
-                # + c_g*sum(pv[f]*di[f]
-                #           for f in F)
-                + c_g*sum(y[f] #sum  #arrival delay 
-                          for f in F)
-                # + c_g*sum(costs[f,j] * tau[f, j]
-                #           for (f,j) in costs)
-
-                # + c_g*sum(pv[f]*ddi[f] #sum(v[f,t]*(t-d[f]) for t in T_dep[f])        # ground delay
-                #         for f in F)
-                , GRB.MINIMIZE);
-    
-    # NEW: fix this bottom part but not pertinent right now
+            # + c_a*sum(pv[f]*sum(w[f,t]*(t-r[f]) for t in T_arr[f])
+            #         - sum(v[f,t]*(t-d[f]) for t in T_dep[f])        # airborne delay for full flights only
+            #             for f in F)
+            #+ c_g*sum(pv[f][1]*di[f] #sum(w[f,t]*(t-r[f]) for t in T_arr[f])        # arrival delay
+            #        for f in F)
+            # + c_g*sum(pv[f]*di[f]
+            #           for f in F)
+            + c_g*sum(y[f] #sum  #arrival delay 
+                        for f in F)
+            # + c_g*sum(costs[f,j] * tau[f, j]
+            #           for (f,j) in costs)
+            # + c_g*sum(pv[f]*ddi[f] #sum(v[f,t]*(t-d[f]) for t in T_dep[f])        # ground delay
+            #         for f in F)
+            , GRB.MINIMIZE);
     else:
-        if boolFullSharing:
-            if boolFullSharingAbstract:
-                for f in F:
-                    if f in F_high_priority_ls:
-                        pv[f] = high_priority_b
-                    elif f in F_med_priority_ls:
-                        pv[f] = low_priority_a
-                    elif f in F_low_priority_ls:
-                        pv[f] = 0
-
-            # NEW
-            for f in F:
-                piecewise_breakpoints, functions_value_breakpoints = mean_value_objective_function(500, pv[f])
-                # x variable needs to act like delay
-                model.addConstr(di[f] >= x[f])
-                model.addConstr(x[f] >= 0)
-                model.addGenConstrPWL(x[f], y[f], piecewise_breakpoints, functions_value_breakpoints, name=f"pwl_cost_function_{f}")
-
-            # tau, y, costs = piecewise_constraints(model, F, pv, di)
-
-            model.setObjective(
-                    + c_g*sum(y[f] #sum(w[f,t]*(t-r[f]) for t in T_arr[f])        # arrival delay
+        model.setObjective(
+                    + c_g*sum(di[f] #sum(w[f,t]*(t-r[f]) for t in T_arr[f])        # arrival delay
                             for f in F)
-                    # + c_g*sum(pv[f]*di[f]
-                    #       for f in F)
-                    # + c_g*sum(costs[f,j] * tau[f, j]
-                    #       for (f,j) in costs)
                     , GRB.MINIMIZE);
-        else:
-            for f in F:
-                piecewise_breakpoints, functions_value_breakpoints = mean_value_objective_function(500, pv[f])
-                # x variable needs to act like delay
-                model.addConstr(di[f] >= x[f])
-                model.addConstr(x[f] >= 0)
-                model.addGenConstrPWL(x[f], y[f], piecewise_breakpoints, functions_value_breakpoints, name=f"pwl_cost_function_{f}")
-            
-            # tau, y, costs = piecewise_constraints(model, F, pv, di)
-
-            model.setObjective(
-                    + c_g*sum(y[f] #sum(w[f,t]*(t-r[f]) for t in T_arr[f])        # arrival delay
-                            for f in F)
-                    # + c_g*sum(pv[f]*di[f]
-                    #       for f in F)
-                    # + c_g*sum(costs[f,j] * tau[f, j]
-                    #       for (f,j) in costs)
-                    , GRB.MINIMIZE);
-
 
     model.update();
 
@@ -1338,58 +1320,60 @@ def create_df2(read_path, output_path, df1, F, untruthful_airline='', airline_ls
     # NEW: piecewise calculation of functions
     # fix, we actually want the randomly generated slopes!
     
+    # old
     # df2['new_delay_15bin_weighted'] = df2['new_delay_15bin'] * df2['expected_flight_val']
 
-    # stochastic_delay_weighted = np.zeros((df2.shape[0],500))
-    # for x in range(500):
-    #     delay_weighted = np.zeros(df2.shape[0])
-    #     for idx in range(df2.shape[0]):
-    #         # Generate piecewise breaks for each flight
-    #         arrivals_array = cost_jump_arrivals(lambda_parameter, T=round_T) 
-    #         f = create_piecewise_function(arrivals_array,df2['flight_val'].iloc[idx],surge)
-    #         delay_weighted[idx] = f(df2['new_delay_15bin'].iloc[idx])
-    #     stochastic_delay_weighted[:,x] = delay_weighted
+    # if untruthful_airline != '':
+    #     df2['new_delay_15bin_weighted_true'] = df2['new_delay_15bin'] * df2['true_expected_flight_val']
+
+    stochastic_delay_weighted = np.zeros((df2.shape[0],500))
+    for x in range(500):
+        delay_weighted = np.zeros(df2.shape[0])
+        for idx in range(df2.shape[0]):
+            # Generate piecewise breaks for each flight
+            arrivals_array = cost_jump_arrivals(lambda_parameter, T=round_T) 
+            f = create_piecewise_function(arrivals_array,df2['flight_val'].iloc[idx],surge)
+            delay_weighted[idx] = f(df2['new_delay_15bin'].iloc[idx])
+        stochastic_delay_weighted[:,x] = delay_weighted
     
-    # simulated_delay_weighted = np.mean(stochastic_delay_weighted, axis=1, keepdims=True)  # (x, 1) array
-
-    # df2['new_delay_15bin_weighted'] = simulated_delay_weighted
-
-    simulated_delay_weighted = np.zeros(df2.shape[0])
-    for idx in range(df2.shape[0]):
-        # generate mean value function
-        mvf_breakpoints, __ = mean_value_objective_function(500,df2['flight_val'].iloc[idx])
-        # make a piecewise function to be able to evaluate decisions
-        mvf_f = create_piecewise_function(mvf_breakpoints, df2['flight_val'].iloc[idx],surge)
-        simulated_delay_weighted[idx] = mvf_f(df2['new_delay_15bin'].iloc[idx])
+    simulated_delay_weighted = np.mean(stochastic_delay_weighted, axis=1, keepdims=True)  # (x, 1) array
 
     df2['new_delay_15bin_weighted'] = simulated_delay_weighted
 
+    # simulated_delay_weighted = np.zeros(df2.shape[0])
+    # for idx in range(df2.shape[0]):
+    #     # generate mean value function
+    #     mvf_breakpoints, __ = mean_value_objective_function(500,df2['flight_val'].iloc[idx])
+    #     # make a piecewise function to be able to evaluate decisions
+    #     mvf_f = create_piecewise_function(mvf_breakpoints, df2['flight_val'].iloc[idx],surge)
+    #     simulated_delay_weighted[idx] = mvf_f(df2['new_delay_15bin'].iloc[idx])
+
+    # df2['new_delay_15bin_weighted'] = simulated_delay_weighted
+
     if untruthful_airline != '':
-        # df2['new_delay_15bin_weighted_true'] = df2['new_delay_15bin'] * df2['true_expected_flight_val']
-        #see note above about true_flight_val it is just the same as flight_val for now
-        # stochastic_delay_weighted = np.zeros((df2.shape[0],500))
-        # for x in range(500):
-        #     delay_weighted = np.zeros(df2.shape[0])
-        #     for idx in range(df2.shape[0]):
-        #         # Generate piecewise breaks for each flight
-        #         arrivals_array = cost_jump_arrivals(lambda_parameter, T=round_T) 
-        #         f = create_piecewise_function(arrivals_array,df2['true_flight_val'].iloc[idx],surge)
-        #         delay_weighted[idx] = f(df2['new_delay_15bin'].iloc[idx])
-        #     stochastic_delay_weighted[:,x] = delay_weighted
+        stochastic_delay_weighted = np.zeros((df2.shape[0],500))
+        for x in range(500):
+            delay_weighted = np.zeros(df2.shape[0])
+            for idx in range(df2.shape[0]):
+                # Generate piecewise breaks for each flight
+                arrivals_array = cost_jump_arrivals(lambda_parameter, T=round_T) 
+                f = create_piecewise_function(arrivals_array,df2['true_flight_val'].iloc[idx],surge)
+                delay_weighted[idx] = f(df2['new_delay_15bin'].iloc[idx])
+            stochastic_delay_weighted[:,x] = delay_weighted
         
-        # simulated_delay_weighted = np.mean(stochastic_delay_weighted, axis=1, keepdims=True)  # (x, 1) array
-
-        # df2['new_delay_15bin_weighted_true'] = simulated_delay_weighted
-
-        simulated_delay_weighted = np.zeros(df2.shape[0])
-        for idx in range(df2.shape[0]):
-            # generate mean value function
-            mvf_breakpoints, __ = mean_value_objective_function(500,df2['true_flight_val'].iloc[idx])
-            # make a piecewise function to be able to evaluate decisions
-            mvf_f = create_piecewise_function(mvf_breakpoints, df2['true_flight_val'].iloc[idx],surge)
-            simulated_delay_weighted[idx] = mvf_f(df2['new_delay_15bin'].iloc[idx])
+        simulated_delay_weighted = np.mean(stochastic_delay_weighted, axis=1, keepdims=True)  # (x, 1) array
 
         df2['new_delay_15bin_weighted_true'] = simulated_delay_weighted
+
+        # simulated_delay_weighted = np.zeros(df2.shape[0])
+        # for idx in range(df2.shape[0]):
+        #     # generate mean value function
+        #     mvf_breakpoints, __ = mean_value_objective_function(500,df2['true_flight_val'].iloc[idx])
+        #     # make a piecewise function to be able to evaluate decisions
+        #     mvf_f = create_piecewise_function(mvf_breakpoints, df2['true_flight_val'].iloc[idx],surge)
+        #     simulated_delay_weighted[idx] = mvf_f(df2['new_delay_15bin'].iloc[idx])
+
+        # df2['new_delay_15bin_weighted_true'] = simulated_delay_weighted
     
     # print('new delay: {} 15-min bins'.format(new_delay))        #[df2.new_delay_15bin > 0]
     # print('change in delay: {} 15-min bin'.format(df2.change_delay_15bin.sum()))
